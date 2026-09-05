@@ -67,6 +67,14 @@ struct SparseTensorToCOOSparseMatrix {
                   TTypes<int32_t>::Vec coo_col_ind);
 };
 
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+absl::Status FindInvalidSparseTensorIndex(const Eigen::GpuDevice& d,
+                                          TTypes<int64_t>::ConstMatrix indices,
+                                          int64_t batch_size, int64_t rows,
+                                          int64_t cols,
+                                          int* first_invalid_index);
+#endif
+
 // Write coo batch, row, and column vectors to output matrix indices:
 //
 //   indices[:, row_dim] = coo_row_ind

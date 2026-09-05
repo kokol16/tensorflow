@@ -143,6 +143,37 @@ __global__ void SparseTensorToCOOMatrixKernel(const int64_t* indices,
   }
 }
 
+__global__ void FindInvalidSparseTensorIndexKernel(const int64_t* indices,
+                                                   int size, int rank,
+                                                   int64_t batch_size,
+                                                   int64_t rows, int64_t cols,
+                                                   int* first_invalid_index) {
+  GPU_1D_KERNEL_LOOP(i, size) {
+    const int64_t offset = static_cast<int64_t>(i) * rank;
+    const int64_t batch = rank == 3 ? ldg(indices + offset) : 0;
+    const int64_t row = ldg(indices + offset + rank - 2);
+    const int64_t col = ldg(indices + offset + rank - 1);
+    if (batch < 0 || batch >= batch_size || row < 0 || row >= rows || col < 0 ||
+        col >= cols) {
+      GpuAtomicMin(first_invalid_index, i);
+    }
+  }
+}
+
+absl::Status FindInvalidSparseTensorIndex(const GPUDevice& d,
+                                          TTypes<int64_t>::ConstMatrix indices,
+                                          int64_t batch_size, int64_t rows,
+                                          int64_t cols,
+                                          int* first_invalid_index) {
+  const int size = indices.dimension(0);
+  if (size == 0) return absl::OkStatus();
+  GpuLaunchConfig config = GetGpuLaunchConfig(size, d);
+  return GpuLaunchKernel(FindInvalidSparseTensorIndexKernel, config.block_count,
+                         config.thread_per_block, 0, d.stream(), indices.data(),
+                         size, indices.dimension(1), batch_size, rows, cols,
+                         first_invalid_index);
+}
+
 template <>
 void SparseTensorToCOOSparseMatrix<GPUDevice>::operator()(
     const GPUDevice& d, TTypes<int64_t>::ConstVec host_dense_shape,

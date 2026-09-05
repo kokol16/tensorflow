@@ -97,6 +97,17 @@ class CSRSparseMatrixTest(test.TestCase):
     self.assertAllClose([a_mats[tuple(x)] for x in indices], a_sm_st.values)
 
   @test_util.run_in_graph_and_eager_modes
+  def testConstructorFromDenseTensorRejectsInvalidIndices(self):
+    if not self._gpu_available:
+      return
+
+    with test_util.force_gpu(), self.assertRaisesOpError(
+        r"indices\[0\] is out of bounds"):
+      a_sm = sparse_csr_matrix_ops.CSRSparseMatrix(
+          np.ones([2, 2], dtype=np.float32), indices=[[-1, 0]])
+      self.evaluate(a_sm.to_dense())
+
+  @test_util.run_in_graph_and_eager_modes
   def testConj(self):
     if not self._gpu_available:
       return

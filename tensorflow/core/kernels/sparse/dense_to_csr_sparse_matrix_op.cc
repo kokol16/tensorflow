@@ -19,6 +19,8 @@ limitations under the License.
 #define EIGEN_USE_GPU
 #endif
 
+#include <limits>
+
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -174,6 +176,32 @@ class DenseToCSRSparseMatrixGPUOp : public AsyncOpKernel {
     const int64_t rows = dense_tensor_shape.dim_size((rank == 2) ? 0 : 1);
     const int64_t cols = dense_tensor_shape.dim_size((rank == 2) ? 1 : 2);
 
+    constexpr int kAllIndicesValid = std::numeric_limits<int>::max();
+    Tensor first_invalid_index_device_t;
+    OP_REQUIRES_OK_ASYNC(c,
+                         c->allocate_temp(DT_INT32, TensorShape({1}),
+                                          &first_invalid_index_device_t),
+                         done);
+    auto first_invalid_index_device =
+        first_invalid_index_device_t.vec<int32_t>();
+    stream_executor::DeviceAddressBase first_invalid_index_device_ptr(
+        first_invalid_index_device.data(), sizeof(int32_t));
+    OP_REQUIRES_OK_ASYNC(c,
+                         stream->Memset32(&first_invalid_index_device_ptr,
+                                          kAllIndicesValid, sizeof(int32_t)),
+                         done);
+    OP_REQUIRES_OK_ASYNC(c,
+                         functor::FindInvalidSparseTensorIndex(
+                             d, indices_t.matrix<int64_t>(), batch_size, rows,
+                             cols, first_invalid_index_device.data()),
+                         done);
+    ScratchSpace<int32_t> first_invalid_index_host(c, 1, /*on_host=*/true);
+    OP_REQUIRES_OK_ASYNC(
+        c,
+        stream->Memcpy(first_invalid_index_host.mutable_data(),
+                       first_invalid_index_device_ptr, sizeof(int32_t)),
+        done);
+
     ScratchSpace<int32_t> nnz_per_batch_host(c, batch_size, /*on_host*/ true);
 
     Tensor nnz_per_batch_device_t;
@@ -208,13 +236,24 @@ class DenseToCSRSparseMatrixGPUOp : public AsyncOpKernel {
     // TODO(ebrevdo): write a custom pair of kernels: one that
     // calculates the batched csr_row_ptr vector, another that fills in
     // the col_ind and values vectors.
+    TensorReference first_invalid_index_device_ref(
+        first_invalid_index_device_t);
     TensorReference nnz_per_batch_device_ref(nnz_per_batch_device_t);
-    auto convert_to_csr = [this, c, rank, batch_size, nnz_per_batch_host,
+    auto convert_to_csr = [this, c, rank, batch_size, first_invalid_index_host,
+                           first_invalid_index_device_ref, nnz_per_batch_host,
                            nnz_per_batch_device_ref, stream, &d, &params_t,
                            &indices_t, dense_tensor_shape, rows, cols, done]() {
+      first_invalid_index_device_ref.Unref();
       // The data has been copied out of the nnz_per_batch_device
       // tensor by the time we get here; we can unreference it.
       nnz_per_batch_device_ref.Unref();
+
+      const int32_t first_invalid_index = *first_invalid_index_host.data();
+      OP_REQUIRES_ASYNC(
+          c, first_invalid_index == std::numeric_limits<int>::max(),
+          absl::InvalidArgumentError(absl::StrCat(
+              "indices[", first_invalid_index, "] is out of bounds")),
+          done);
 
       auto nnz_per_batch = nnz_per_batch_host.tensor().vec<int32_t>();
 
@@ -344,13 +383,8 @@ class DenseToCSRSparseMatrixGPUOp : public AsyncOpKernel {
       done();
     };
 
-    if (rank == 2) {
-      convert_to_csr();
-    } else {
-      // Launch the GPU kernel to count nnz entries, then call convert_to_csr.
-      c->device()->tensorflow_accelerator_device_info()->event_mgr->ThenExecute(
-          stream, convert_to_csr);
-    }
+    c->device()->tensorflow_accelerator_device_info()->event_mgr->ThenExecute(
+        stream, convert_to_csr);
   }
 };
 

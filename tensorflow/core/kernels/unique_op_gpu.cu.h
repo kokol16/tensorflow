@@ -59,7 +59,7 @@ __global__ void ExtractFirstOccurrenceIndicesKernel(
     const TIndex* __restrict__ sorted_input_inds,
     const TIndex* __restrict__ sorted_input_unique_ids,
     TIndex* __restrict__ unique_input_inds, TIndex* __restrict__ segment_ends) {
-  GPU_1D_KERNEL_LOOP(i, input_size) {
+  for (int64_t i : GpuGridRangeX<int64_t>(input_size)) {
     TIndex sorted_input_unique_id = sorted_input_unique_ids[i];
     if (i == 0 || sorted_input_unique_id != sorted_input_unique_ids[i - 1]) {
       unique_input_inds[sorted_input_unique_id] = sorted_input_inds[i];
@@ -103,7 +103,7 @@ __global__ void GatherOutputsAndInvertPermutationKernel(
     const TIndex* __restrict__ sorted_unique_perm,
     const TIndex* __restrict__ segment_ends, T* __restrict__ output,
     TIndex* __restrict__ inv_sorted_unique_perm, TIndex* __restrict__ count) {
-  GPU_1D_KERNEL_LOOP(i, uniq_size) {
+  for (int64_t i : GpuGridRangeX<int64_t>(uniq_size)) {
     output[i] = input[sorted_unique_input_inds[i]];
     auto j = sorted_unique_perm[i];
     inv_sorted_unique_perm[j] = i;
@@ -140,7 +140,7 @@ __global__ void LookupAndScatterUniqueIdsKernel(
     const TIndex* __restrict__ sorted_input_unique_ids,
     const TIndex* __restrict__ inv_sorted_unique_perm,
     TIndex* __restrict__ idx) {
-  GPU_1D_KERNEL_LOOP(i, input_size) {
+  for (int64_t i : GpuGridRangeX<int64_t>(input_size)) {
     idx[sorted_input_inds[i]] =
         inv_sorted_unique_perm[sorted_input_unique_ids[i]];
   }
